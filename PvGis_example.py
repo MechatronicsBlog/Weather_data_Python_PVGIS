@@ -10,8 +10,8 @@ pvGis = PvGis()
 LATITUDE = 37.097
 LONGITUDE = -2.365
 START_DATE = datetime(2016, 6, 1, 00, 00, 00)
-END_DATE = datetime(2016, 6, 15, 23, 59, 59)
-DATABASE = 'PVGIS-CMSAF'
+END_DATE = datetime(2016, 6, 7, 23, 59, 59)
+DATABASE = 'PVGIS-SARAH'
 
 # Set PVGIS parameters
 pvGis.latitude = LATITUDE

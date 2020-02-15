@@ -1,8 +1,10 @@
-import requests
 import csv
 import time
-from datetime import datetime, timedelta
+import json
+import requests
 import pandas as pd
+from datetime import datetime, timedelta
+
 
 class data_row:
 
@@ -13,6 +15,7 @@ class data_row:
         self.dhi = dhi
         self.ta = ta
         self.ws = ws
+
 
 class PvGis:
 
@@ -28,18 +31,8 @@ class PvGis:
     PARAM_START_YEAR = 'startyear'
     PARAM_END_YEAR = 'endyear'
     PARAM_COMPONENTS = 'components'
+    PARAM_OUTPUT_FORMAT = 'outputformat'
 
-    # PVGIS keywords in request response
-    KEY_PVGIS_DATE = 'Date'
-    KEY_PVGIS_DNI = 'Bi'
-    KEY_PVGIS_DHI = 'Di'
-    KEY_PVGIS_RI = 'Ri'
-    KEY_PVGIS_TA = 'Tamb'
-    KEY_PVGIS_END = '\r\n\r\n'
-    KEY_PVGIS_WS  = 'W10'
-    KEY_PVGIS_BEGIN_ALT = 'Elevation (m):'
-    KEY_PVGIS_END_ALT = '\r\n'
-    
     # Data headers
     HEADER_DATE_TIME = 'DateTime'
     HEADER_GHI = 'GHI'
@@ -47,6 +40,17 @@ class PvGis:
     HEADER_DHI = 'DHI'
     HEADER_TA = 'TAmb'
     HEADER_WS = 'Ws'
+
+    # PVGIS json keys
+    # https://ec.europa.eu/jrc/en/PVGIS/tools/hourly-radiation
+    KEY_JSON_OUTPUTS = 'outputs'
+    KEY_JSON_HOURLY = 'hourly'
+    KEY_JSON_TIME = 'time'
+    KEY_JSON_GB = 'Gb(i)'
+    KEY_JSON_GD = 'Gd(i)'
+    KEY_JSON_GR = 'Gr(i)'
+    KEY_JSON_TA = 'T2m'
+    KEY_JSON_WS = 'WS10m'
     
     # Request codes
     REQUEST_OK = 200
@@ -55,10 +59,11 @@ class PvGis:
     DEF_LATITUDE = 36
     # Longitude, in decimal degrees, west is negative
     DEF_LONGITUDE = 2
-    # 'PVGIS-CMSAF' for Europe and Africa,
     # 'PVGIS-SARAH' for Europe, Africa and Asia
-    # 'PVGIS-NSRDB' for the Americas between 60N and 20S
-    DEF_RAD_DATABASE = 'PVGIS-CMSAF'
+    # 'PVGIS-NSRDB' for the Americas between 60°N and 20°S
+    # 'PVGIS-ERA5' and 'PVGIS-COSMO' for Europe (including high-latitudes)
+    # 'PVGIS-CMSAF' for Europe and Africa(will be deprecated)
+    DEF_RAD_DATABASE = 'PVGIS-SARAH'
     # Calculate taking into account shadows from high horizon. Value of 1 for "yes"
     DEF_AUTO_HORIZON = 1
     # Height of the horizon at equidistant directions around the point of interest, in degrees.
@@ -69,12 +74,12 @@ class PvGis:
     DEF_START_DATE = datetime(2016, 1, 1, 00, 00, 00)
     # Final year of the output of monthly averages (Available from 2007 to 2016)
     DEF_END_DATE = datetime(2016, 12, 31, 23, 59, 59)
-    # Default altitude
-    DEF_ALTITUDE = 0
     # If "1" outputs beam, diffuse and reflected radiation components. Otherwise, it outputs only global values
     DEF_COMPONENTS = 1
     # Date format
     DATE_FORMAT = '%Y%m%d:%H%M'
+    # Output formats: 'basic', 'csv' and 'json'
+    DEF_OUTPUT_FORMAT = 'json'
 
     def __init__(self):
         self._latitude = self.DEF_LATITUDE
@@ -84,7 +89,6 @@ class PvGis:
         self._userHorizon = self.DEF_USER_HORIZON
         self._startDate = self.DEF_START_DATE
         self._endDate = self.DEF_END_DATE
-        self._altitude = self.DEF_ALTITUDE
         self._verbose = False
         self._data_parsed = False
         self._data = None
@@ -94,9 +98,6 @@ class PvGis:
 
     @property
     def longitude(self): return self._longitude
-
-    @property
-    def altitude(self): return self._altitude
 
     @property
     def rad_database(self): return self._radDatabase
@@ -139,63 +140,35 @@ class PvGis:
 
     @verbose.setter
     def verbose(self, value): self._verbose = value
-    
-    def parse_altitude(self, value):
-        index_begin_alt = value.find(self.KEY_PVGIS_BEGIN_ALT)
 
-        if index_begin_alt >= 0:
-            text = value[index_begin_alt + len(self.KEY_PVGIS_BEGIN_ALT):]
-            index_end_alt = text.find(self.KEY_PVGIS_END_ALT)
+    def parse_json(self, value):
 
-            if index_end_alt >= 0:
-                self._altitude = float(text[:index_end_alt])
-                if self._verbose:
-                    print("Altitude:", str(self.altitude))
-
-    def parse(self, value):
-
-        self.parse_altitude(value)
-
-        index_begin = value.find(self.KEY_PVGIS_DATE)
-        if index_begin < 0:
-            return None
-
-        value = value[index_begin:]
-
-        index_end = value.find(self.KEY_PVGIS_END)
-
-        if index_end < 0:
-            return None
-
-        text = value[:index_end].splitlines()
-        csv_reader = csv.DictReader(text)
         data = []
+        pvgis_json = json.loads(value)
 
-        # Better efficiency in the for loop
         start_date = self.start_date
         end_date = self.end_date
-        key_pv_gis_date = self.KEY_PVGIS_DATE
+        key_pv_gis_date = self.KEY_JSON_TIME
         date_format = self.DATE_FORMAT
-        key_pv_gis_dhi = self.KEY_PVGIS_DHI
-        key_pv_gis_dni = self.KEY_PVGIS_DNI
-        key_pv_gis_ri = self.KEY_PVGIS_RI
-        key_pv_gis_ta = self.KEY_PVGIS_TA
-        key_pv_gis_ws = self.KEY_PVGIS_WS
+        key_pv_gis_gb = self.KEY_JSON_GB
+        key_pv_gis_gd = self.KEY_JSON_GD
+        key_pv_gis_gr = self.KEY_JSON_GR
+        key_pv_gis_ta = self.KEY_JSON_TA
+        key_pv_gis_ws = self.KEY_JSON_WS
 
-        for row in csv_reader:
-            date = datetime.strptime(row[key_pv_gis_date], date_format)
+        for json_obj in pvgis_json[self.KEY_JSON_OUTPUTS][self.KEY_JSON_HOURLY]:
+            date = datetime.strptime(json_obj[key_pv_gis_date], date_format)
             if date > end_date:
                 break
 
             if start_date <= date:
-                dhi = float(row[key_pv_gis_dhi])
-                dni = float(row[key_pv_gis_dni])
-                ri = float(row[key_pv_gis_ri])
-                ghi = dhi + dni + ri
-                ta = float(row[key_pv_gis_ta])
-                ws = float(row[key_pv_gis_ws])
-                
-                data.append(data_row(date,ghi,dni,dhi,ta,ws))
+                dni = float(json_obj[key_pv_gis_gb])
+                dhi = float(json_obj[key_pv_gis_gd])
+                ghi = float(json_obj[key_pv_gis_gr]) + dni + dhi
+                ta = float(json_obj[key_pv_gis_ta])
+                ws = float(json_obj[key_pv_gis_ws])
+
+                data.append(data_row(date, ghi, dni, dhi, ta, ws))
 
         # Dictionary
         return data
@@ -215,7 +188,8 @@ class PvGis:
                    self.PARAM_USER_HORIZON: self.user_horizon,
                    self.PARAM_START_YEAR:   self.start_date.year,
                    self.PARAM_END_YEAR:     self.end_date.year,
-                   self.PARAM_COMPONENTS:   self.DEF_COMPONENTS}
+                   self.PARAM_COMPONENTS:   self.DEF_COMPONENTS,
+                   self.PARAM_OUTPUT_FORMAT: self.DEF_OUTPUT_FORMAT}
 
         if self._verbose:
             print("Request send")
@@ -224,12 +198,10 @@ class PvGis:
 
         if self._verbose:
             print('Request:', res.url)
-            
-        self._altitude = self.DEF_ALTITUDE
 
         if res.status_code == self.REQUEST_OK:
             self._data_parsed = True
-            self._data = self.parse(res.text)
+            self._data = self.parse_json(res.text)
         else:
             self._data_parsed = False
 
@@ -275,7 +247,7 @@ class PvGis:
                   self.HEADER_TA: [d.ta for d in self._data],
                   self.HEADER_WS: [d.ws for d in self._data]}
             
-            return pd.DataFrame(data=dt);
+            return pd.DataFrame(data=dt)
             
         else:
             print('Not available data')
